@@ -61,6 +61,7 @@ class UNISURF(nn.Module):
             opacity = odds / (1 + odds)
         return opacity
 
+
 def volume_render(
     rays_o, 
     rays_d,
@@ -91,6 +92,7 @@ def volume_render(
     too_close_threshold = 0.1,  # range from 0 to 1
     N_query = 64,
     N_freespace = 32,
+    normalize_factor=1.0,
     **dummy_kwargs  # just place holder
 ):
     """
@@ -142,7 +144,7 @@ def volume_render(
         # ---------------
         # find root
         d_pred_out, pt_pred, mask, mask_sign_change = root_finding_surface_points(
-            model.implicit_surface, rays_o, rays_d, near=near, far=far, method=method, logit_tau=logit_tau, fill_inf=False, batched=batched)
+            model.implicit_surface, rays_o, rays_d, near=near, far=far, method=method, logit_tau=logit_tau, fill_inf=False, batched=batched, normalize_factor=normalize_factor)
 
         # [(B), N_rays]
         # d_pred_out = torch.clamp(d_pred_out, min=near, max=far)
@@ -205,7 +207,7 @@ def volume_render(
         # ------------------
         # calculate points
         # [(B), N_rays, N_query+N_freespace, 3]
-        pts = rays_o[..., None, :] + rays_d[..., None, :] * d_all[..., :, None]
+        pts = (rays_o[..., None, :] + rays_d[..., None, :] * d_all[..., :, None]) / normalize_factor
         
         # -------------------
         # query network
@@ -282,6 +284,7 @@ def volume_render(
 
     return ret['rgb'], ret['depth_volume'], ret
 
+
 class SingleRenderer(nn.Module):
     def __init__(self, model: Union[UNISURF]):
         super().__init__()
@@ -316,7 +319,8 @@ class Trainer(nn.Module):
         rays_o, rays_d, select_inds = rend_util.get_rays(
             c2w, intrinsics, render_kwargs_train['H'], render_kwargs_train['W'], N_rays=args.data.N_rays)
         
-        target_rgb = torch.gather(ground_truth['rgb'].to(device), -2, torch.stack(3*[select_inds],-1)) 
+        target_rgb = torch.gather(ground_truth['rgb'].to(device), -2, torch.stack(3 * [select_inds], -1))
+        target_depth = torch.gather(ground_truth['depth'].to(device), -1, select_inds)
 
         interval = max(args.training.delta_max * np.exp(-it * args.training.delta_beta), args.training.delta_min)
         
@@ -325,9 +329,15 @@ class Trainer(nn.Module):
         # ----------- calculate loss
         losses = OrderedDict()
         
-        losses['loss_img'] = F.l1_loss(rgb, target_rgb)
-
+        # losses['loss_img'] = F.l1_loss(rgb, target_rgb)
+        # losses['loss_depth'] = F.l1_loss(depth_v, target_depth)
+        img_res = torch.where(target_depth > 0., torch.mean(torch.abs(rgb - target_rgb), dim=-1), torch.zeros_like(target_depth))
+        losses['loss_img'] = torch.sum(img_res) / torch.count_nonzero(target_depth)
+        if args.training.depth_loss:
+            depth_res = torch.where(target_depth > 0., torch.abs(depth_v - target_depth), torch.zeros_like(target_depth))
+            losses['loss_depth'] = torch.sum(depth_res) / torch.count_nonzero(target_depth)
         losses['loss_reg'] = torch.tensor(0.).to(device)
+
         if args.training.w_reg > 0:
             pts_surface = extras['surface_points']
             _, nablas_surface, _ = self.model.implicit_surface.forward_with_nablas(pts_surface)
@@ -390,7 +400,8 @@ def get_model(args):
         'perturb': args.model.get('perturb', True),   # config whether do stratified sampling
         'white_bkgd': args.model.get('white_bkgd', False),
         'logit_tau': model.get_surface_from_opacity(args.model.tau),
-        'radius_of_interest': args.model.obj_bounding_radius
+        'radius_of_interest': args.model.obj_bounding_radius,
+        'normalize_factor': args.model.get('normalize_factor', 1.0)
     }
     render_kwargs_test = copy.deepcopy(render_kwargs_train)
     render_kwargs_test['rayschunk'] = args.data.val_rayschunk

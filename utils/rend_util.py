@@ -150,8 +150,8 @@ def get_rays(c2w, intrinsics, H, W, N_rays=-1):
     pixel_points_cam = pixel_points_cam.transpose(-1,-2)
 
     # NOTE: left-multiply.
-    #       after the above permute(), shapes of coordinates changed from [B,N,4] to [B,4,N], which ensures correct left-multiplication
-    #       p is camera 2 world matrix.
+    # after the above permute(), shapes of coordinates changed from [B,N,4] to [B,4,N], which ensures correct left-multiplication
+    # p is camera 2 world matrix.
     if len(prefix) > 0:
         world_coords = torch.bmm(p, pixel_points_cam).transpose(-1, -2)[..., :3]
     else:

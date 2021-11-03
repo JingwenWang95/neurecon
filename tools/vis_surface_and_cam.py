@@ -99,7 +99,7 @@ if __name__ == "__main__":
     parser = io_util.create_args_parser()
     parser.add_argument("--scan_id", type=int, default=40)
     parser.add_argument("--mesh_file", type=str, default=None)
-    parser.add_argument("--sphere_radius", type=float, default=3.0)
+    parser.add_argument("--sphere_radius", type=float, default=1.0)
     parser.add_argument("--backface",action='store_true', help='render show back face')
     args = parser.parse_args()
 

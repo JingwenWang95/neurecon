@@ -3,11 +3,11 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from utils.io_util import load_mask, load_rgb, glob_imgs
+from utils.io_util import load_depth, load_rgb, glob_imgs
 from utils.rend_util import rot_to_quat, load_K_Rt_from_P
 
+
 class SceneDataset(torch.utils.data.Dataset):
-    # NOTE: jianfei: modified from IDR.   https://github.com/lioryariv/idr/blob/main/code/datasets/scene_dataset.py
     """Dataset for a class of objects, where each datapoint is a SceneInstanceDataset."""
 
     def __init__(self,
@@ -15,54 +15,77 @@ class SceneDataset(torch.utils.data.Dataset):
                  data_dir,
                  downscale=1.,   # [H, W]
                  cam_file=None,
-                 scale_radius=-1):
+                 scale_radius=-1,
+                 time_downsample_factor=30,
+                 radius_init=1.,
+                 start_moving=-1,
+                 normalize_mode="shift_only"):
 
         assert os.path.exists(data_dir), "Data directory is empty"
 
         self.instance_dir = data_dir
         self.train_cameras = train_cameras
 
-        image_dir = '{0}/image'.format(self.instance_dir)
-        image_paths = sorted(glob_imgs(image_dir))
-        mask_dir = '{0}/mask'.format(self.instance_dir)
-        mask_paths = sorted(glob_imgs(mask_dir))
-
-        self.n_images = len(image_paths)
-        
-        # determine width, height
-        self.downscale = downscale
-        tmp_rgb = load_rgb(image_paths[0], downscale)
-        _, self.H, self.W = tmp_rgb.shape
-        
-
+        # only camera projection matrix
         self.cam_file = '{0}/cameras.npz'.format(self.instance_dir)
         if cam_file is not None:
             self.cam_file = '{0}/{1}'.format(self.instance_dir, cam_file)
 
         camera_dict = np.load(self.cam_file)
-        scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-        world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+        # TODO: write different normalization methods to config file
+        # camera projection matrix
+        world_mats = camera_dict['world_mats'].astype(np.float32)
+        # translation matrix to shift the ROI to coordinate centre
+        normalize_mat = camera_dict['normalize_mat'].astype(np.float32)
+        trans_mat = camera_dict['trans_mat']
+
+        if normalize_mode == "shift_only":
+            s = 1.
+        else:
+            s = normalize_mat[0, 0]
 
         self.intrinsics_all = []
         self.c2w_all = []
         cam_center_norms = []
-        for scale_mat, world_mat in zip(scale_mats, world_mats):
-            P = world_mat @ scale_mat
+        camera_ids = []
+        for i, world_mat in enumerate(world_mats[:start_moving]):
+            P = world_mat @ trans_mat if normalize_mode == "shift_only" else world_mat @ normalize_mat
             P = P[:3, :4]
             intrinsics, pose = load_K_Rt_from_P(P)
+
+            if np.linalg.norm(pose[:3, 3]) < radius_init:
+                continue
             intrinsics_denorm, pose_denorm = load_K_Rt_from_P(world_mat[:3, :4])
             cam_center_norms.append(np.linalg.norm(pose[:3,3]))
-            
+
             # downscale intrinsics
             intrinsics[0, 2] /= downscale
             intrinsics[1, 2] /= downscale
             intrinsics[0, 0] /= downscale
             intrinsics[1, 1] /= downscale
             # intrinsics[0, 1] /= downscale # skew is a ratio, do not scale
-            
+
             self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
             self.c2w_all.append(torch.from_numpy(pose).float())
-        max_cam_norm = max(cam_center_norms)
+            camera_ids += [i]
+        self.intrinsics_all = self.intrinsics_all[::time_downsample_factor]
+        self.c2w_all = self.c2w_all[::time_downsample_factor]
+        max_cam_norm = max(cam_center_norms[::time_downsample_factor])
+
+        image_dir = '{0}/rgb'.format(self.instance_dir)
+        all_image_paths = sorted(glob_imgs(image_dir))
+        image_paths = [all_image_paths[i] for i in camera_ids][::time_downsample_factor]
+        depth_dir = '{0}/depth'.format(self.instance_dir)
+        all_depth_paths = sorted(glob_imgs(depth_dir))
+        depth_paths = [all_depth_paths[i] for i in camera_ids][::time_downsample_factor]
+
+        self.n_images = len(image_paths)
+
+        # determine width, height
+        self.downscale = downscale
+        tmp_rgb = load_rgb(image_paths[0], downscale)
+        _, self.H, self.W = tmp_rgb.shape
+
         if scale_radius > 0:
             for i in range(len(self.c2w_all)):
                 self.c2w_all[i][:3, 3] *= (scale_radius / max_cam_norm / 1.1)
@@ -73,11 +96,13 @@ class SceneDataset(torch.utils.data.Dataset):
             rgb = rgb.reshape(3, -1).transpose(1, 0)
             self.rgb_images.append(torch.from_numpy(rgb).float())
 
-        self.object_masks = []
-        for path in mask_paths:
-            object_mask = load_mask(path, downscale)
-            object_mask = object_mask.reshape(-1)
-            self.object_masks.append(torch.from_numpy(object_mask).to(dtype=torch.bool))
+        self.depth_images = []
+        for path in depth_paths:
+            depth = load_depth(path, downscale)
+            depth = depth.reshape(-1) / (5000. * s)
+            depth[depth > 3.5] = -1.
+            depth[depth < 0.05] = 0.
+            self.depth_images.append(torch.from_numpy(depth).float())
 
     def __len__(self):
         return self.n_images
@@ -87,17 +112,13 @@ class SceneDataset(torch.utils.data.Dataset):
         # uv = torch.from_numpy(np.flip(uv, axis=0).copy()).float()
         # uv = uv.reshape(2, -1).transpose(1, 0)
 
-        sample = {
-            "object_mask": self.object_masks[idx],
-            "intrinsics": self.intrinsics_all[idx],
-        }
-
-        ground_truth = {
-            "rgb": self.rgb_images[idx]
-        }
+        sample = dict()
+        ground_truth = dict()
 
         ground_truth["rgb"] = self.rgb_images[idx]
-        sample["object_mask"] = self.object_masks[idx]
+        ground_truth["depth"] = self.depth_images[idx]
+        sample["depth"] = self.depth_images[idx]
+        sample["intrinsics"] = self.intrinsics_all[idx]
 
         if not self.train_cameras:
             sample["c2w"] = self.c2w_all[idx]
@@ -121,20 +142,14 @@ class SceneDataset(torch.utils.data.Dataset):
 
         return tuple(all_parsed)
 
-    def get_scale_mat(self):
-        return np.load(self.cam_file)['scale_mat_0']
-
-    def get_gt_pose(self, scaled=True):
+    def get_gt_pose(self):
         # Load gt pose without normalization to unit sphere
         camera_dict = np.load(self.cam_file)
         world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-        scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-
+        normalize_mat = camera_dict['normalize_mat'].astype(np.float32)
         c2w_all = []
-        for scale_mat, world_mat in zip(scale_mats, world_mats):
-            P = world_mat
-            if scaled:
-                P = world_mat @ scale_mat
+        for world_mat in world_mats:
+            P = world_mat @ normalize_mat
             P = P[:3, :4]
             _, pose = load_K_Rt_from_P(P)
             c2w_all.append(torch.from_numpy(pose).float())
@@ -160,10 +175,9 @@ class SceneDataset(torch.utils.data.Dataset):
 
         return init_quat
 
+
 if __name__ == "__main__":
-    dataset = SceneDataset(False, '../data/DTU/scan40')
-    c2w = dataset.get_gt_pose(scaled=True).data.cpu().numpy()
-    extrinsics = np.linalg.inv(c2w)  # camera extrinsics are w2c matrix
-    camera_matrix = next(iter(dataset))[1]['intrinsics'].data.cpu().numpy()
+    dataset = SceneDataset(False, '../data/tum/fr3_long_office/processed')
+    c2w = dataset.get_gt_pose().data.cpu().numpy()
     from tools.vis_camera import visualize
-    visualize(camera_matrix, extrinsics)
+    visualize(c2w)

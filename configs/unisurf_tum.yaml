@@ -1,12 +1,13 @@
-expname: unisurf_DTU_65
+expname: tum_fr3_office_depth/1
 
 # device_ids: [0]     # single gpu           ; run on specified GPU
 # device_ids: [1, 0]  # DP                   ; run on specified GPU
-device_ids: -1        # single GPU / DP / DDP; run on all available GPUs; 
+device_ids: -1        # single GPU / DP / DDP; run on all available GPUs;
 
 data:
   batch_size: 1       # one batch, one image
-  data_dir: ./data/DTU/scan65
+  type: TUM
+  data_dir: ./data/tum/fr3_long_office/processed
   downscale: 1        # downscale image for training
   pin_memory: True
 
@@ -18,8 +19,11 @@ model:
   framework: UNISURF
   tau: 0.5  # level surface
   W_geometry_feature: 256
-  obj_bounding_radius: 4.0   # as in UNISURF supp II.1, 'four-times' larger region of interest
-  normalize_factor: 2.0  # number that used to divide the query input by, used in TUM sequence where camera is too close to the ROI
+  obj_bounding_radius: 2.0   # as in UNISURF supp II.1, 'four-times' larger region of interest
+  normalize_factor: 1.0  # number that used to divide the query input by, used in TUM sequence where camera is too close to the ROI
+  normalize_mode: shift_and_scale  # 2 ways: 1. shift_only: only shift the scene to centre, then scaling is done by applying normalization before query
+                                   # the network 2. shift_and_scale: apply both translation and scale to the camera poses, scale the depth image accordingly, then
+                                   # no need to do normalization before query network.
   surface:
     radius_init: 1.0
     D: 8
@@ -36,6 +40,8 @@ training:
   lr: 1.0e-4
   w_reg: 0.01
   perturb_surface_pts: 0.01 # for smoothing normals
+
+  depth_loss: True
 
   delta_max: 1.0
   delta_min: 0.05

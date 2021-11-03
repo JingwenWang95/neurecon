@@ -46,6 +46,13 @@ def load_rgb(path, downscale=1):
     img = img.transpose(2, 0, 1)
     return img
 
+def load_depth(path, downscale=1):
+    img = imageio.imread(path, ignoregamma=True)
+    img = np.array(img).astype(np.float32)
+    if downscale != 1:
+        img = rescale(img, 1./downscale, anti_aliasing=False, multichannel=True)
+    return img
+
 def load_mask(path, downscale=1):
     alpha = imageio.imread(path, as_gray=True)
     alpha = skimage.img_as_float32(alpha)

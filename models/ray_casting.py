@@ -46,6 +46,7 @@ def root_finding_surface_points(
     method='secant',
     N_secant_steps = 8,
     fill_inf=True,
+    normalize_factor=1.0
     ):
     """
     rays_o: [(B), N_rays, 3]
@@ -77,7 +78,7 @@ def root_finding_surface_points(
         p_proposal = rays_o.unsqueeze(-2) + d_proposal.unsqueeze(-1) * rays_d.unsqueeze(-2)
     
         # only query sigma
-        pts = p_proposal
+        pts = p_proposal / normalize_factor
         
         # query network
         # [B, N_rays, N_steps]
