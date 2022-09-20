@@ -179,7 +179,8 @@ def volume_render(
     def render_rayschunk(rays_o: torch.Tensor, rays_d: torch.Tensor):
         # rays_o: [(B), N_rays, 3]
         # rays_d: [(B), N_rays, 3]
-        
+
+        # get near and far from the knowledge of unit sphere
         # [(B), N_rays] x 2
         near, far = rend_util.near_far_from_sphere(rays_o, rays_d, r=obj_bounding_radius)
         if near_bypass is not None:
@@ -292,13 +293,13 @@ def volume_render(
         # ------------------
         # sdf, nablas, _ = model.implicit_surface.forward_with_nablas(pts)
         sdf, nablas, _ = batchify_query(model.implicit_surface.forward_with_nablas, pts)
-        # [(B), N_ryas, N_pts], [(B), N_ryas, N_pts-1]
+        # [(B), N_rays, N_pts], [(B), N_ryas, N_pts-1]
         cdf, opacity_alpha = sdf_to_alpha(sdf, model.forward_s())
         # radiances = model.forward_radiance(pts_mid, view_dirs_mid)
         radiances = batchify_query(model.forward_radiance, pts_mid, view_dirs.unsqueeze(-2).expand_as(pts_mid) if use_view_dirs else None)
 
         # ------------------
-        # Outside Scene
+        # Outside Scene, NeRF model, only care about color
         # ------------------
         if N_outside > 0:
             _t = torch.linspace(0, 1, N_outside + 2)[..., 1:-1].float().to(device)
@@ -310,7 +311,7 @@ def volume_render(
                 _t_rand = torch.rand(_upper.shape).float().to(device)
                 d_vals_out = _lower + (_upper - _lower) * _t_rand
             
-            d_vals_out = torch.cat([d_mid, d_vals_out], dim=-1) # already sorted
+            d_vals_out = torch.cat([d_mid, d_vals_out], dim=-1)  # already sorted
             pts_out = rays_o[..., None, :] + rays_d[..., None, :] * d_vals_out[..., :, None]
             r = pts_out.norm(dim=-1, keepdim=True)
             x_out = torch.cat([pts_out/r, 1./r], dim=-1)

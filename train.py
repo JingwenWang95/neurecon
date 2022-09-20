@@ -56,7 +56,8 @@ def main_function(args):
 
         # save configs
         io_util.save_config(args, os.path.join(exp_dir, 'config.yaml'))
-    
+
+    # Load data
     dataset, val_dataset = get_data(args, return_val=True, val_downscale=args.data.get('val_downscale', 4.0))
     bs = args.data.get('batch_size', None)
     if args.ddp:

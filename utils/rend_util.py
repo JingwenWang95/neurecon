@@ -7,6 +7,7 @@ from torch.nn import functional as F
 
 def load_K_Rt_from_P(P):
     """
+    P = K @ Tcw
     modified from IDR https://github.com/lioryariv/idr
     """
     out = cv2.decomposeProjectionMatrix(P)
@@ -20,7 +21,7 @@ def load_K_Rt_from_P(P):
 
     pose = np.eye(4, dtype=np.float32)
     pose[:3, :3] = R.transpose()
-    pose[:3,3] = (t[:3] / t[3])[:,0]
+    pose[:3, 3] = (t[:3] / t[3])[:,0]
 
     return intrinsics, pose
 
